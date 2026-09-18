@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Daemon that catches the one case the hooks cannot see: a branch switched inside a pane
+# (herdr emits no event for that). It re-reports a workspace only when the value actually changes.
+#
+# Started from the [[startup]] hook as `bin/watch --spawn`, which detaches this loop and returns
+# immediately: a startup hook that keeps running would hold one of herdr's 32 plugin command slots
+# for the whole session and its output would be captured forever.
+#
+# The loop is deliberately cheap. It never calls herdr unless something changed: it stats the
+# HEAD file of each workspace's last known work tree (written by bin/report), and only when HEAD
+# moved, or once every refresh_every ticks (to catch fetch/push changing ahead/behind), does it
+# recompute and compare against the last published value.
+set -u
+
+# shellcheck source=bin/lib.sh
+. "$(dirname "$0")/lib.sh"
+
+interval=$(config_value interval 2)             # seconds between ticks
+refresh_every=$(config_value refresh_every 15)  # ticks between full ahead/behind recomputes
+
+lockfile="$state_dir/watch.lock"
+pidfile="$state_dir/watch.pid"
+
+if [ "${1:-}" = "--spawn" ]; then
+    command -v git >/dev/null 2>&1 || exit 0
+    mkdir -p "$state_dir" 2>/dev/null || exit 0
+    setsid "$0" </dev/null >/dev/null 2>&1 &
+    exit 0
+fi
+
+mkdir -p "$state_dir" 2>/dev/null || exit 0
+# Exactly one daemon, even when several focus events spawn one at the same time: the lock is held
+# for the daemon's whole life, so a second copy exits immediately. A crashed daemon releases it.
+exec 9>"$lockfile" || exit 0
+flock -n 9 || exit 0
+printf '%s\n' "$$" >"$pidfile"
+trap 'rm -f "$pidfile"' EXIT
+
+# Without a socket there is no server to report to. Fall back to herdr's default path rather than
+# looping forever: a daemon spawned from an environment without HERDR_SOCKET_PATH used to never exit.
+socket=${HERDR_SOCKET_PATH:-$HOME/.config/herdr/herdr.sock}
+tick=0
+unreachable=0
+# A stopped herdr can leave its socket file behind, so the file existing is not proof the server
+# is alive. Three silent snapshots in a row mean nobody is listening: stop rather than spin forever.
+max_unreachable=3
+
+while :; do
+    sleep "$interval"
+    # Exit with the server: the socket disappears when herdr stops, and a leftover daemon would
+    # keep reporting into a socket that no longer exists.
+    [ -S "$socket" ] || exit 0
+
+    tick=$((tick + 1))
+    full=0
+    [ "$refresh_every" -gt 0 ] 2>/dev/null && [ $((tick % refresh_every)) -eq 0 ] && full=1
+
+    # One snapshot per tick tells us which repository each workspace currently shows, which also
+    # catches a tab switch that herdr did not deliver to the hooks.
+    snapshot=$(workspace_cwds)
+    if [ -z "$snapshot" ]; then
+        unreachable=$((unreachable + 1))
+        [ "$unreachable" -ge "$max_unreachable" ] && exit 0
+        continue
+    fi
+    unreachable=0
+
+    while IFS= read -r line; do
+        IFS=$'\t' read -r workspace candidates <<<"$line"
+        [ -n "$workspace" ] || continue
+        # No candidate (a pane still starting) is not the same as "no repository": skip, do not clear.
+        [ -n "${candidates:-}" ] || continue
+        IFS=$'\t' read -r -a cwds <<<"$candidates"
+        cwd=$(pick_repo_cwd "${cwds[@]}") || cwd=""
+        seen_cwd=$(cat "$state_dir/$workspace.cwd" 2>/dev/null)
+
+        head_now=""
+        if [ -n "$cwd" ] && [ -d "$cwd" ]; then
+            head_file=$(cat "$state_dir/$workspace.head" 2>/dev/null)
+            # The cached HEAD path belongs to the previous cwd; ignore it when the pane moved.
+            [ "$cwd" = "$seen_cwd" ] && [ -n "$head_file" ] && [ -f "$head_file" ] &&
+                head_now=$(cat "$head_file" 2>/dev/null)
+        fi
+        head_seen=$(cat "$state_dir/$workspace.head_value" 2>/dev/null)
+
+        # Nothing to do while the visible repository and its HEAD are unchanged. Every
+        # refresh_every ticks we still recompute, because fetch and push move ahead/behind
+        # without touching HEAD.
+        if [ "$cwd" = "$seen_cwd" ] && [ "$head_now" = "$head_seen" ] && [ "$full" -eq 0 ]; then
+            continue
+        fi
+        printf '%s\n' "$head_now" >"$state_dir/$workspace.head_value"
+
+        # Publish only when the rendered value would differ from what the sidebar already shows.
+        branch=""
+        status=""
+        if [ -n "$cwd" ] && branch=$(git_branch_label "$cwd"); then
+            status=$(git_ahead_behind "$cwd")
+            want="$branch|$status"
+        else
+            want=""
+        fi
+        have=$(cat "$state_dir/$workspace.value" 2>/dev/null)
+        [ "$want" = "$have" ] && [ "$cwd" = "$seen_cwd" ] && continue
+
+        publish "$workspace" "$cwd"
+    done <<<"$snapshot"
+done

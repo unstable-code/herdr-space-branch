@@ -1,0 +1,45 @@
+# herdr-space-branch: show the git branch of the pane you are actually looking at in the spaces sidebar.
+#
+# herdr 0.9.0 resolves a workspace's git identity from the root pane of its FIRST tab
+# (Workspace::resolved_identity_cwd_from in src/workspace.rs), so a workspace holding two repositories
+# always shows the branch of one of them, whichever tab happens to be first.
+#
+# This plugin reports the focused pane's branch and ahead/behind counts as workspace metadata tokens,
+# which the sidebar can render instead of the built-in `branch` and `git_status` columns.
+
+id = "unstable-code.herdr-space-branch"
+name = "herdr-space-branch"
+version = "0.1.0"
+description = "Spaces sidebar branch and ahead/behind for the focused pane, not just the first tab's repository."
+min_herdr_version = "0.9.0"
+platforms = ["linux", "macos"]
+
+# Every way the visible repository can change: focusing another pane, tab or workspace, and panes moving between them.
+[[events]]
+on = "pane.focused"
+command = ["bin/report"]
+
+[[events]]
+on = "tab.focused"
+command = ["bin/report"]
+
+[[events]]
+on = "workspace.focused"
+command = ["bin/report"]
+
+[[events]]
+on = "pane.moved"
+command = ["bin/report"]
+
+# Branch changes inside a pane emit no herdr event, so a small detached daemon watches HEAD files.
+# --spawn returns immediately: a startup hook that kept running would hold one of herdr's 32 plugin
+# command slots for the whole session and have its output captured forever.
+[[startup]]
+command = ["bin/watch", "--spawn"]
+
+# Manual refresh, for when you would rather not wait for the daemon tick.
+[[actions]]
+id = "refresh"
+title = "Refresh space branch"
+contexts = ["pane", "workspace"]
+command = ["bin/report"]

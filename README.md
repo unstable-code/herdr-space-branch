@@ -1,93 +1,141 @@
 # herdr-space-branch
 
+**English** | [한국어](README.ko.md)
 
+A [herdr](https://herdr.dev) plugin that makes the spaces sidebar show the branch of the pane you are
+**actually looking at**, instead of whichever repository happens to be in the first tab.
 
-## Getting started
+## Why
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+herdr 0.9.0 resolves a workspace's git identity from the root pane of its **first tab**
+(`Workspace::resolved_identity_cwd_from` in `src/workspace.rs`), and both the `branch` and `git_status`
+columns come from that one directory. A workspace holding two repositories therefore shows one of them
+and never the other:
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.gggames.synology.me/peter/herdr-plugins/herdr-space-branch.git
-git branch -M master
-git push -uf origin master
+space: PIXELBOOST
+├── tab: research-archive   (main)     ← sidebar shows this…
+└── tab: homepage           (develop)  ← …while you work here
 ```
 
-## Integrate with your tools
+Reordering tabs or splitting the workspace per repository works, but has to be redone by hand every time.
 
-* [Set up project integrations](https://gitlab.gggames.synology.me/peter/herdr-plugins/herdr-space-branch/-/settings/integrations)
+## How it works
 
-## Collaborate with your team
+- Hooks on `pane.focused`, `tab.focused`, `workspace.focused` and `pane.moved`.
+- Each run refreshes **every** workspace, not only the one the event carries: the sidebar draws a row per
+  workspace, and switching tabs inside one changes which repository that row should show. A single
+  `herdr api snapshot` gives the pane each workspace's active tab is showing.
+- Reads that pane's `foreground_cwd` (it follows `cd`, unlike the pane's start directory) and reports two
+  workspace metadata tokens with `herdr workspace report-metadata`:
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+  | token | value |
+  |---|---|
+  | `branch` | current branch, or `detached@<short sha>` when HEAD is detached |
+  | `git_status` | `↑N ↓M` against the upstream, matching the built-in column (`src/ui/sidebar.rs`); cleared when both are zero |
 
-## Test and Deploy
+- Both tokens are **cleared** when the focused pane is not inside a git work tree, so the sidebar never shows
+  a branch belonging to some other pane.
+- Each report carries a millisecond sequence number, so out-of-order events cannot resurrect an older value.
+- Some changes reach no hook at all: a branch switched **inside** a pane emits no herdr event, and a tab
+  switch does not always deliver one either. A small daemon (`bin/watch`) covers both. It starts detached
+  from the `[[startup]]` hook, and the event hooks restart it when it is not running — which also covers
+  installing the plugin into an already running server. Only one instance runs (`flock`), and it stops once
+  the herdr server stops answering (a stopped server can leave its socket file behind, so three silent
+  snapshots in a row are the signal).
+  - Each tick (2 s) costs one snapshot plus a `stat` of each workspace's HEAD file; it runs `git` and calls
+    herdr only when the visible repository or its HEAD actually changed. Every 15th tick it recomputes
+    ahead/behind anyway, which can change on fetch or push without HEAD moving.
+  - Both numbers are settings; see Configuration below.
+- Which pane a workspace's row follows: the pane focused right now, else the pane that workspace was
+  last focused on (remembered per workspace), else the remaining panes of its active tab in layout
+  order. The first candidate that really is a git work tree wins — only the globally focused pane is
+  marked in the snapshot, so without that order an unfocused workspace would fall back to whatever
+  pane happens to come first, often a shell in `$HOME` that would blank the row.
 
-Use the built-in continuous integration in GitLab.
+## Requirements
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+- herdr ≥ 0.9.0 (Linux / macOS)
+- `bash`, `jq`, `git`, `flock` (util-linux) on the herdr server's `PATH`
 
 ## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```sh
+herdr plugin install unstable-code/herdr-space-branch
+```
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+For development, link a local clone instead; the working tree is used directly, so `git pull` is the update:
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+```sh
+git clone https://github.com/unstable-code/herdr-space-branch.git
+herdr plugin link ./herdr-space-branch
+```
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+Then render the tokens instead of the built-in columns in `~/.config/herdr/config.toml`:
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+```toml
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace"], ["$branch", "$git_status"]]
+```
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+Apply with `herdr server reload-config` (or your reload key).
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+Optionally bind the manual refresh action, for when you would rather not wait for a daemon tick:
+
+```toml
+[[keys.command]]
+key = "prefix+shift+b"
+type = "plugin_action"
+command = "unstable-code.herdr-space-branch.refresh"
+description = "refresh space branch"
+```
+
+## Configuration
+
+Optional, in `config.toml` inside this plugin's config directory
+(`herdr plugin config-dir unstable-code.herdr-space-branch`):
+
+```toml
+strict = false       # see below
+interval = 2         # daemon tick, seconds
+refresh_every = 15   # ticks between ahead/behind recomputes
+```
+
+`strict` decides what happens when the pane you are on is **not** a git work tree — a shell sitting in
+`$HOME`, say:
+
+| | `strict = false` (default) | `strict = true` |
+|---|---|---|
+| Pane you are on is a repository | that repository | that repository |
+| Pane you are on is not, another pane of the same tab is | that other repository | row cleared |
+| No pane of the tab is a repository | row cleared | row cleared |
+
+So the default keeps the row useful while you step into a plain shell; `strict` keeps it exactly
+honest about the pane you are in.
+
+## Verification
+
+Checked on an isolated herdr 0.9.0 server with one workspace holding two repositories: `repo-a` on `main`
+(first tab) and `repo-b` on `develop`, two commits ahead of its upstream.
+
+| Focused pane | Workspace tokens |
+|---|---|
+| `repo-b` | `branch=develop`, `git_status=↑2` |
+| `repo-a` | `branch=main` (git_status cleared) |
+
+Running `git switch -c feature-x` inside the focused pane — which herdr emits no event for — was picked up by
+the daemon within six seconds, and switching the workspace's active tab to the other repository within five.
+Five concurrent `bin/watch --spawn` calls left exactly one daemon, and it stopped after the server did. All
+hook runs exited 0, taking about 50-110 ms each.
+
+## Limitations
+
+- The workspace **label** still comes from the first tab; only the branch columns follow the focus.
+- A branch switched inside a pane shows up on the next daemon tick (2 s by default) rather than instantly.
+- Every focus event spawns a shell, one `herdr pane get` and a couple of `git` calls; the daemon adds one
+  `stat` per workspace every two seconds.
+- `git_status` is ahead/behind only, like the built-in column. It says nothing about uncommitted changes.
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+[MIT](LICENSE)

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Report the focused pane's git branch and ahead/behind counts as workspace metadata tokens.
+#
+# Tokens (rendered by [ui.sidebar.spaces] rows as $branch / $git_status):
+#   branch      current branch, or "detached@<short sha>" when HEAD is detached
+#   git_status  "↑N ↓M" like herdr's built-in column (src/ui/sidebar.rs); cleared when both are zero
+#
+# Both tokens are cleared when the focused pane is not inside a git work tree, so the sidebar never
+# shows a branch that belongs to some other pane.
+#
+# Runs from the pane.focused / tab.focused / workspace.focused / pane.moved hooks and from the
+# `refresh` action, so it must stay short and silent. bin/watch covers the remaining case:
+# a branch switched inside a pane, which herdr emits no event for.
+set -u
+
+# shellcheck source=bin/lib.sh
+. "$(dirname "$0")/lib.sh"
+
+command -v jq >/dev/null 2>&1 || exit 0
+command -v git >/dev/null 2>&1 || exit 0
+
+# The event tells us which pane this workspace is on right now; remember it so the row keeps that
+# repository once the focus moves to another workspace.
+remember_pane "${HERDR_WORKSPACE_ID:-}" "${HERDR_PANE_ID:-}"
+
+# Every workspace is refreshed, not just the one the event carries: the sidebar draws a row per
+# workspace, and switching tabs inside one changes which repository that row should show.
+publish_all
+ensure_watch
+exit 0
