@@ -88,7 +88,7 @@ publish() {
     if [ -z "$cwd" ] || [ ! -d "$cwd" ] || ! branch=$(git_branch_label "$cwd"); then
         "$herdr" workspace report-metadata "$workspace" --source "$source_id" --seq "$seq" \
             --clear-token branch --clear-token git_status >/dev/null 2>&1
-        printf '' >"$state_dir/$workspace.value"
+        printf '%s\n' '|' >"$state_dir/$workspace.value"
         printf '' >"$state_dir/$workspace.head"
         return 0
     fi
@@ -109,8 +109,15 @@ publish() {
     return 0
 }
 
-# "<workspace>\t<cwd>\t<cwd>..." — every candidate directory of a workspace's active tab, the
-# focused pane first, then the rest in layout order.
+# "<workspace>\t<shown>\t<cwd>\t<cwd>..." — what the sidebar shows for a workspace right now, then
+# every candidate directory of its active tab, the focused pane first, then the rest in layout order.
+#
+# <shown> is "<branch>|<git_status>" read back from herdr, never from this plugin's own records:
+# herdr keeps workspace tokens in memory, so a server restart (a crashed compositor takes it down)
+# drops every one of them while the state directory survives on disk. Comparing against a cache of
+# what was published then says "already shown" forever for every workspace whose branch did not
+# change — measured 2026-09-19, three rows stayed blank after a Hyprland crash. It always holds a
+# "|", which keeps the tab-separated field from ever being empty (read would collapse it).
 #
 # One snapshot covers all workspaces, which is what makes this cheap enough to run on every hook
 # and every daemon tick. Updating only the workspace an event carries is not enough: switching tabs
@@ -143,7 +150,7 @@ workspace_cwds() {
         | (($panes | map(select(.focused)))
             + ($panes | map(select(.pane_id == $remembered)))
             + $panes) as $ordered
-        | [$w.workspace_id]
+        | [$w.workspace_id, (($w.tokens.branch // "") + "|" + ($w.tokens.git_status // ""))]
             + (reduce $ordered[] as $p ([];
                 (($p.foreground_cwd // $p.cwd) // "") as $c
                 | if $c == "" or (. | index($c)) then . else . + [$c] end))
@@ -177,10 +184,10 @@ pick_repo_cwd() {
 
 # Publish every workspace whose rendered value would change.
 publish_all() {
-    local line workspace candidates cwd branch status want have
+    local line workspace shown candidates cwd branch status want
     local -a cwds
     while IFS= read -r line; do
-        IFS=$'\t' read -r workspace candidates <<<"$line"
+        IFS=$'\t' read -r workspace shown candidates <<<"$line"
         [ -n "$workspace" ] || continue
         # No candidate at all means "unknown", not "no repository" — a pane can report none while it
         # is still starting. Clearing on that would blank a row that is fine, so leave it as it is.
@@ -193,11 +200,11 @@ publish_all() {
             status=$(git_ahead_behind "$cwd")
             want="$branch|$status"
         else
-            want=""
+            want="|"
         fi
-        # Skip the report when the sidebar already shows this, for this same directory.
-        have=$(cat "$state_dir/$workspace.value" 2>/dev/null)
-        [ "$want" = "$have" ] && [ -f "$state_dir/$workspace.cwd" ] &&
+        # Skip the report when the sidebar already shows this, for this same directory. The
+        # directory still matters: bin/watch follows the HEAD file of the cwd publish records.
+        [ "$want" = "$shown" ] && [ -f "$state_dir/$workspace.cwd" ] &&
             [ "$(cat "$state_dir/$workspace.cwd" 2>/dev/null)" = "$cwd" ] && continue
         publish "$workspace" "$cwd"
     done < <(workspace_cwds)

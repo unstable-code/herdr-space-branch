@@ -8,8 +8,9 @@
 #
 # The loop is deliberately cheap. It never calls herdr unless something changed: it stats the
 # HEAD file of each workspace's last known work tree (written by bin/report), and only when HEAD
-# moved, or once every refresh_every ticks (to catch fetch/push changing ahead/behind), does it
-# recompute and compare against the last published value.
+# moved, or once every refresh_every ticks (to catch fetch/push changing ahead/behind), or when the
+# sidebar no longer shows what was published (a restarted server has lost every token), does it
+# recompute and compare against what the sidebar shows.
 set -u
 
 # shellcheck source=bin/lib.sh
@@ -66,13 +67,16 @@ while :; do
     unreachable=0
 
     while IFS= read -r line; do
-        IFS=$'\t' read -r workspace candidates <<<"$line"
+        IFS=$'\t' read -r workspace shown candidates <<<"$line"
         [ -n "$workspace" ] || continue
         # No candidate (a pane still starting) is not the same as "no repository": skip, do not clear.
         [ -n "${candidates:-}" ] || continue
         IFS=$'\t' read -r -a cwds <<<"$candidates"
         cwd=$(pick_repo_cwd "${cwds[@]}") || cwd=""
         seen_cwd=$(cat "$state_dir/$workspace.cwd" 2>/dev/null)
+        # What was last published. Written as "" before "|" became the empty value.
+        published=$(cat "$state_dir/$workspace.value" 2>/dev/null)
+        [ -n "$published" ] || published="|"
 
         head_now=""
         if [ -n "$cwd" ] && [ -d "$cwd" ]; then
@@ -83,10 +87,13 @@ while :; do
         fi
         head_seen=$(cat "$state_dir/$workspace.head_value" 2>/dev/null)
 
-        # Nothing to do while the visible repository and its HEAD are unchanged. Every
-        # refresh_every ticks we still recompute, because fetch and push move ahead/behind
-        # without touching HEAD.
-        if [ "$cwd" = "$seen_cwd" ] && [ "$head_now" = "$head_seen" ] && [ "$full" -eq 0 ]; then
+        # Nothing to do while the visible repository and its HEAD are unchanged, and herdr still
+        # shows what was published. Every refresh_every ticks we still recompute, because fetch and
+        # push move ahead/behind without touching HEAD. The last condition is what brings rows back
+        # after a server restart: herdr lost the tokens, nothing on disk changed, and without it the
+        # daemon would wait for the next full tick, then find its own record agreeing with itself.
+        if [ "$cwd" = "$seen_cwd" ] && [ "$head_now" = "$head_seen" ] && [ "$full" -eq 0 ] &&
+            [ "$shown" = "$published" ]; then
             continue
         fi
         printf '%s\n' "$head_now" >"$state_dir/$workspace.head_value"
@@ -98,10 +105,10 @@ while :; do
             status=$(git_ahead_behind "$cwd")
             want="$branch|$status"
         else
-            want=""
+            want="|"
         fi
-        have=$(cat "$state_dir/$workspace.value" 2>/dev/null)
-        [ "$want" = "$have" ] && [ "$cwd" = "$seen_cwd" ] && continue
+        # Compared with what herdr shows, not with what this daemon remembers publishing.
+        [ "$want" = "$shown" ] && [ "$cwd" = "$seen_cwd" ] && continue
 
         publish "$workspace" "$cwd"
     done <<<"$snapshot"

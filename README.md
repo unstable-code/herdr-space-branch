@@ -37,6 +37,11 @@ Reordering tabs or splitting the workspace per repository works, but has to be r
 - Both tokens are **cleared** when the focused pane is not inside a git work tree, so the sidebar never shows
   a branch belonging to some other pane.
 - Each report carries a millisecond sequence number, so out-of-order events cannot resurrect an older value.
+- Whether a row needs reporting is decided against **what the sidebar shows**, read back from herdr, not
+  against a record of what was published. herdr keeps workspace tokens in memory, so a restarted server
+  (a crashed compositor takes it down) has lost all of them while this plugin's state directory survives
+  on disk. Comparing with that record once left every row whose branch had not changed blank after a
+  restart; comparing with the sidebar brings them back on the daemon's next tick.
 - Some changes reach no hook at all: a branch switched **inside** a pane emits no herdr event, and a tab
   switch does not always deliver one either. A small daemon (`bin/watch`) covers both. It starts detached
   from the `[[startup]]` hook, and the event hooks restart it when it is not running — which also covers
@@ -127,6 +132,10 @@ Running `git switch -c feature-x` inside the focused pane — which herdr emits 
 the daemon within six seconds, and switching the workspace's active tab to the other repository within five.
 Five concurrent `bin/watch --spawn` calls left exactly one daemon, and it stopped after the server did. All
 hook runs exited 0, taking about 50-110 ms each.
+
+After the server was killed and started again, the workspace's tokens were empty, and the daemon restored
+`branch=master` within four seconds with no focus event. The previous version, compared on the same
+restart, left the row empty.
 
 ## Limitations
 
