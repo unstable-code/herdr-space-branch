@@ -136,6 +136,11 @@ refresh_every = 15   # 몇 틱마다 ahead/behind 재계산
   `stat` 한 번을 더한다.
 - `git_status` 는 내장 칸과 마찬가지로 ahead/behind 만 본다. 커밋하지 않은 변경은 반영하지 않는다.
 
+## 제3자 저작물
+
+`git_status` 출력 형식(`↑N ↓M`)은 herdr 내장 사이드바 칸(`src/ui/sidebar.rs`)의
+형식을 따른다. herdr 는 Apache-2.0 이다. herdr 의 코드나 바이너리를 재배포하지는 않는다.
+
 ## License
 
 [MIT](LICENSE)

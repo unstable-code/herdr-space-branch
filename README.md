@@ -145,6 +145,12 @@ restart, left the row empty.
   `stat` per workspace every two seconds.
 - `git_status` is ahead/behind only, like the built-in column. It says nothing about uncommitted changes.
 
+## Third-party
+
+The `git_status` output format (`↑N ↓M`) follows herdr's built-in sidebar column
+(`src/ui/sidebar.rs`). herdr is licensed under Apache-2.0. No herdr code or binary is
+redistributed here.
+
 ## License
 
 [MIT](LICENSE)
